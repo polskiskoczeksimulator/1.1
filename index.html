@@ -6656,6 +6656,35 @@ simulateDuetEvent=function(player,label,season,majorKind='wc',course){
       made++;
     }
 
+    /* Uzupełnianie elity: gdy w Pucharze Świata zostaje za mało zawodników
+       (prawdziwi zawodnicy się starzeją i kończą kariery), gra tworzy
+       utalentowanych debiutantów o OVR kwalifikującym do PŚ i walki o podia. */
+    try{
+      const wcActive=world.filter(x=>x&&x.level==='WC'&&Number(x.age||0)<AGEING.retirementAge).length;
+      const wcTarget=85;
+      const need=Math.max(0,Math.min(30,wcTarget-wcActive));
+      let talents=0,tg=0;
+      while(talents<need&&tg++<800){
+        const c=FINAL_makeForeignGenerated('WC',used,world.length+talents+tg);
+        const name=c?.name;if(!name)continue;
+        const roll=Math.random();
+        const ovr=roll<0.12?randomInt(86,93):roll<0.45?randomInt(80,85):randomInt(75,79);
+        world.push({id:`generated|${seasonKey}|talent|${name}|${talents}`,name,nation:c.nation||'AUT',level:'WC',ovr,baseOvr:ovr,age:randomInt(19,24),real:false,generated:true,talent:true,seasonPoints:0,seasonStarts:0,createdSeason:Number(player.season)});
+        used.add(name);talents++;
+      }
+      /* Zaplecze: COC też nie może wyschnąć. */
+      const cocActive=world.filter(x=>x&&x.level==='COC'&&Number(x.age||0)<AGEING.retirementAge).length;
+      const needC=Math.max(0,Math.min(6,45-cocActive));
+      let cm=0,cg=0;
+      while(cm<needC&&cg++<600){
+        const c=FINAL_makeForeignGenerated('COC',used,world.length+cm+cg);
+        const name=c?.name;if(!name)continue;
+        const ovr=randomInt(61,73);
+        world.push({id:`generated|${seasonKey}|coc|${name}|${cm}`,name,nation:c.nation||'AUT',level:'COC',ovr,baseOvr:ovr,age:randomInt(18,23),real:false,generated:true,seasonPoints:0,seasonStarts:0,createdSeason:Number(player.season)});
+        used.add(name);cm++;
+      }
+    }catch(e){console.warn('Uzupełnianie elity:',e)}
+
     player.generatedSeasonNpcs[seasonKey]=made>0?made:-1;
     return world;
   };
@@ -10311,8 +10340,8 @@ simulateDuetEvent=function(player,label,season,majorKind='wc',course){
           e.kind &&
           (
             (r.type==='tcsRound'&&e.kind==='tcs') ||
-            (r.type==='team'&&e.kind==='team') ||
-            (r.type==='duet'&&e.kind==='duet') ||
+            ((r.type==='team'||r.type==='majorTeam')&&(e.kind==='team'||e.kind==='teamMajor')) ||
+            ((r.type==='duet'||r.type==='duetMajor')&&(e.kind==='duet'||e.kind==='duetMajor')) ||
             (r.type==='majorIndividual'&&e.kind==='major') ||
             (r.type==='majorTeam'&&e.kind==='teamMajor') ||
             (r.type==='duetMajor'&&e.kind==='duetMajor')
@@ -10356,6 +10385,27 @@ simulateDuetEvent=function(player,label,season,majorKind='wc',course){
 
     const season=Number(result?.season);
     if(!Number.isFinite(season))return null;
+
+    /* Imprezy główne (IO, MŚ, MŚwL, TCS, konkursy drużynowe/duetów) bez zapisanej daty:
+       odtwarzamy ją z kalendarza imprez danego sezonu. */
+    if(result&&(result.majorKind||['tcsRound','tcsSummary','team','duet','majorIndividual','majorTeam','duetMajor'].includes(result.type))&&!historyIsSummer(result)){
+      try{
+        const pp=Object.assign(Object.create(player),{season});
+        const evs=(majorCalendarForSeason(pp)||[]).filter(e=>e&&e.date);
+        const kindOk=e=>{
+          if(result.type==='tcsRound'||result.type==='tcsSummary')return e.kind==='tcs';
+          if(result.type==='team'||result.type==='majorTeam')return e.kind==='team'||e.kind==='teamMajor';
+          if(result.type==='duet'||result.type==='duetMajor')return e.kind==='duet'||e.kind==='duetMajor';
+          return e.kind==='major';
+        };
+        let c=evs.filter(e=>kindOk(e)&&(!result.majorKind||e.majorKind===result.majorKind||(result.majorKind==='wc'&&e.majorKind==='wc')));
+        const norm=x=>String(x||'').toLocaleLowerCase('pl-PL').replace(/[^a-z0-9ąćęłńóśźż]/g,'');
+        const byCourse=c.filter(e=>{const ec=Array.isArray(e.course)?e.course[0]:e.course;return norm(ec)&&norm(ec)===norm(result.course);});
+        if(byCourse.length)c=byCourse;
+        if(result.type==='tcsSummary')c=c.slice(-1);
+        if(c.length&&c[0].date)return String(c[0].date).slice(0,10);
+      }catch(e){}
+    }
 
     if(historyIsSummer(result)){
       const level=result.level;
@@ -10675,7 +10725,7 @@ simulateDuetEvent=function(player,label,season,majorKind='wc',course){
       return `<tr><td>${escapeHtml(historySeasonLabel(r.season))}</td><td>${escapeHtml(dp.full)}</td><td>${escapeHtml(String(r.competition||'—'))}</td><td>${escapeHtml(String(r.course||'—'))}${r.hs?` HS${r.hs}`:''}</td><td><strong>${Number(r.playerRank)>0?Number(r.playerRank)+'.':'—'}</strong></td><td>${historyJumpTotal(snap)}</td></tr>`;
     }).join('')}</tbody></table></div>`;
 
-    const wjc=(p.careerResults||[]).filter(r=>r&&['wjcIndividual','wjcTeam'].includes(r.type));
+    const wjc=(p.careerResults||[]).filter(r=>r&&['wjcIndividual','wjcTeam'].includes(r.type)&&!r.missed&&Number(r.playerRank)>0);
     if(wjc.length)sections.push(`<article class="career-history-card"><h3>MISTRZOSTWA ŚWIATA JUNIORÓW</h3>${extraResultTable(wjc)}</article>`);
 
     const mpWinter=(p.careerResults||[]).filter(r=>r?.type==='polishChampionship'&&r.seasonPhase!=='summer');
@@ -10685,7 +10735,7 @@ simulateDuetEvent=function(player,label,season,majorKind='wc',course){
 
     const flyingPlaces=['harrachov','kulm','planica','vikersund','oberstdorf'];
     const flying=(p.careerResults||[]).filter(r=>r&&!r.missed&&r.level==='WC'&&String(r.hillType)==='fly'&&flyingPlaces.some(x=>String(r.course||'').toLocaleLowerCase('pl-PL').includes(x)));
-    if(flying.length){
+    if(false&&flying.length){ /* usunięto z WYNIKÓW ZAWODNIKA: Puchar Świata w Lotach */
       const flyRows=[];
       const seasons=[...new Set(flying.map(r=>Number(r.season)))].sort((a,b)=>a-b);
       seasons.forEach(season=>{
@@ -15881,7 +15931,7 @@ try{
   const RIV_ALLOWED_NATIONS=['POL','GER','AUT','JPN','CAN','SUI','KAZ','NOR','SWE','FIN','KOR','USA','FRA','ITA','SLO','SVK','BUL'];
   const RIV_ELITE_NATIONS=['POL','GER','JPN','NOR','AUT','SLO','SUI','FIN'];
   const RIV_COUNTRY_NAMES={POL:'Polska',GER:'Niemcy',AUT:'Austria',JPN:'Japonia',CAN:'Kanada',SUI:'Szwajcaria',KAZ:'Kazachstan',NOR:'Norwegia',SWE:'Szwecja',FIN:'Finlandia',KOR:'Korea Południowa',USA:'USA',FRA:'Francja',ITA:'Włochy',SLO:'Słowenia',SVK:'Słowacja',BUL:'Bułgaria'};
-  const RIV_ISO2={POL:'pl',GER:'de',AUT:'at',JPN:'jp',CAN:'ca',SUI:'ch',KAZ:'kz',NOR:'no',SWE:'se',FIN:'fi',KOR:'kr',USA:'us',FRA:'fr',ITA:'it',SLO:'si',SVK:'sk',BUL:'bg'};
+  const RIV_ISO2={POL:'pl',GER:'de',AUT:'at',JPN:'jp',CAN:'ca',SUI:'ch',KAZ:'kz',NOR:'no',SWE:'se',FIN:'fi',KOR:'kr',USA:'us',FRA:'fr',ITA:'it',SLO:'si',SVK:'sk',BUL:'bg',CZE:'cz',EST:'ee',UKR:'ua',ROU:'ro',CHN:'cn'};
   function RIV_flagUrl(n){const iso=RIV_ISO2[String(n||'').toUpperCase()];return iso?`https://flagcdn.com/w640/${iso}.png`:'';}
   function RIV_flagCss(n){const u=RIV_flagUrl(n);return u?`--riv-flag-url:url('${u}')`:'--riv-flag-url:none';}
   const RIV_STAT_KEYS=[
@@ -16066,6 +16116,7 @@ try{
     const ovr=RIV_num(rival.ovr,0);
     const allowed=RIV_allowedNationsForOvr(ovr,playerNation);
     const current=String(rival.nation||'').toUpperCase();
+    if(rival.real&&current&&current!==playerNation&&current!=='TUR'){rival.nation=current;return rival;}
     if(current==='TUR' || !allowed.includes(current)){
       rival.nation=allowed[0]||RIV_ELITE_NATIONS[0];
     }else rival.nation=current;
@@ -16155,11 +16206,32 @@ try{
     });
     return candidates.sort((a,b)=>String(a.name).localeCompare(String(b.name),'pl'))[0]||null;
   }
+  /* Prawdziwi zawodnicy mają pierwszeństwo: bierzemy tych, których aktualny OVR
+     jest najbliższy docelowemu (tolerancja rośnie stopniowo). Rywale wymyśleni
+     powstają dopiero wtedy, gdy prawdziwych o takim OVR jest za mało. */
+  function RIV_pickRealCandidates(p,target,playerNation,limit=4){
+    const world=ensureWorld(p)||[];
+    const eff=x=>{const v=typeof effectiveAthleteOvr==='function'?effectiveAthleteOvr(x):Number(x.ovr);return Math.round(Number(v));};
+    const base=world.filter(x=>x&&x.real&&x.level!=='RETIRED'&&x.name&&Number(x.age||0)<AGEING.retirementAge&&String(x.nation||'').toUpperCase()!==playerNation&&String(x.nation||'').toUpperCase()!=='TUR'&&Number.isFinite(eff(x)));
+    for(const tol of [0,1,2,3,4,6]){
+      const near=base.filter(x=>Math.abs(eff(x)-target)<=tol);
+      if(near.length>=limit||tol===6){
+        const shuffled=RIV_shuffle(near.slice()).sort((a,b)=>Math.abs(eff(a)-target)-Math.abs(eff(b)-target)+((Math.random()-0.5)*0.9));
+        const out=[],nats=new Set();
+        shuffled.forEach(x=>{if(out.length<limit&&!nats.has(String(x.nation).toUpperCase())){out.push(x);nats.add(String(x.nation).toUpperCase());}});
+        shuffled.forEach(x=>{if(out.length<limit&&!out.includes(x))out.push(x);});
+        return out;
+      }
+    }
+    return [];
+  }
   function RIV_buildCandidates(p,diffKey,targetOverride){
     const target=Number.isFinite(Number(targetOverride))?Number(targetOverride):RIV_targetOvr(p,diffKey);
     const playerNation=String(p.nation||'POL').toUpperCase();
     const countryPool=RIV_allowedNationsForOvr(target,playerNation);
-    const countries=RIV_shuffle(countryPool).slice(0,4);
+    const realPicks=RIV_pickRealCandidates(p,target,playerNation);
+    const realNats=new Set(realPicks.map(x=>String(x.nation).toUpperCase()));
+    const countries=[...realPicks.map(x=>String(x.nation).toUpperCase()),...RIV_shuffle(countryPool.filter(n=>!realNats.has(n)))].slice(0,4);
     const usedNames=new Set((ensureWorld(p)||[]).map(x=>String(x?.name||'').toLocaleLowerCase('pl-PL')));
     const pickedNames=new Set();
     const usedIds=new Set();
@@ -16167,11 +16239,12 @@ try{
     const usedStrongSides=new Set();
     const usedWeakSides=new Set();
     return countries.map((nation,i)=>{
-      const existing=RIV_getExistingCandidate(p,nation,target,pickedNames);
+      const existing=realPicks[i]||null;
       let rival;
       if(existing){
         const effective=typeof effectiveAthleteOvr==='function'?effectiveAthleteOvr(existing):existing.ovr;
-        rival={...existing,stats:{...existing.stats},pss6Profile:undefined,ovr:Math.round(RIV_num(effective,target))};
+        rival={...existing,stats:{...(existing.stats||{})},pss6Profile:undefined,ovr:Math.round(RIV_num(effective,target)),real:true};
+        if(!RIV_STAT_KEYS.every(([_,k])=>Number.isFinite(Number(rival.stats[k]))))rival.stats=RIV_makeStatsForOvr(target,i);
         pickedNames.add(String(rival.name||'').toLocaleLowerCase('pl-PL'));
       }else{
         const name=RIV_nameCandidate(nation,usedNames);usedNames.add(name.toLocaleLowerCase('pl-PL'));pickedNames.add(name.toLocaleLowerCase('pl-PL'));
@@ -16364,6 +16437,7 @@ try{
     r.difficulty=key;r.startLevel=competitionLevel(p);r.selectionStage='candidates';r.season=Number(p.season);r.candidateOvr=RIV_targetOvr(p,key);r.candidatePool=RIV_buildCandidates(p,key,r.candidateOvr).map(x=>JSON.parse(JSON.stringify(x)));RIV_persistDirect(p);RIV_showCandidates(p);
   }
   function RIV_showCandidates(p){
+    RIV_show();
     const r=RIV_ensureState(p);
     /* Jeżeli lista kandydatów pochodzi ze starszego save'a, RIV_ensureState
        może naprawić duplikaty profili. Zapisujemy naprawione dane, aby kolejne
@@ -16384,12 +16458,13 @@ try{
     RIV_persistDirect(p);RIV_hide();renderPlayer(p);
   }
   function RIV_renderLive(p,finalMode=false){
+    RIV_show();
     const r=RIV_checkLevel(p);if(!r||!r.opponent){RIV_renderInfo(p);return;}
     const result=RIV_compute(p);const diff=RIV_DIFFICULTIES[r.difficulty];
     const opponent=r.opponent;const profilePlayer=RIV_profileFromStats(p,true),profileOpponent=RIV_profileFromStats(opponent,false);
     const status=r.invalidated?`<div class="pss-riv-status pss-riv-invalid">RYWALIZACJA UNIEWAŻNIONA — ${escapeHtml(r.invalidatedReason||'zmiana poziomu rozgrywek')}</div>`:'';
     const rows=result.categories.map(c=>`<div class="pss-riv-cat"><div><div class="pss-riv-cat-value ${RIV_compare(c.playerValue,c.opponentValue,c.lowerBetter).playerClass}">${c.playerValue==null?'—':escapeHtml(String(c.playerValue))}</div><div class="pss-riv-cat-point">${c.playerPoint?'+1 pkt':'0 pkt'}</div></div><div class="pss-riv-cat-name">${escapeHtml(c.label)}</div><div><div class="pss-riv-cat-value ${RIV_compare(c.playerValue,c.opponentValue,c.lowerBetter).opponentClass}">${c.opponentValue==null?'—':escapeHtml(String(c.opponentValue))}</div><div class="pss-riv-cat-point">${c.opponentPoint?'+1 pkt':'0 pkt'}</div></div></div>`).join('');
-    const history=(r.contestHistory||[]).slice().sort((a,b)=>String(a.date||'9999').localeCompare(String(b.date||'9999'))).map(h=>{const pr=h.playerRank,or=h.opponentRank;let pc='missing',oc='missing';if(Number.isFinite(Number(pr))&&Number.isFinite(Number(or))){if(pr===or){pc='tie';oc='tie'}else if(pr<or){pc='win';oc='loss'}else{pc='loss';oc='win'}}return `<div class="pss-riv-history-row"><div class="pss-riv-history-score ${pc}">${pr==null?'—':pr+'.'}</div><div class="pss-riv-history-main">${escapeHtml(h.date||'—')} · ${escapeHtml(RIV_levelLabel(h.level))} · ${escapeHtml(h.course||h.competition||'Konkurs')}</div><div class="pss-riv-history-score ${oc}">${or==null?'—':or+'.'}</div></div>`}).join('');
+    const history=(r.contestHistory||[]).slice().sort((a,b)=>String(a.date||'9999').localeCompare(String(b.date||'9999'))).map(h=>{const pr=h.playerRank,or=h.opponentRank;let pc='missing',oc='missing';const pHas=pr!=null&&Number.isFinite(Number(pr)),oHas=or!=null&&Number.isFinite(Number(or));if(pHas&&!oHas){pc='win';oc='loss'}else if(!pHas&&oHas){pc='loss';oc='win'}else if(pHas&&oHas){if(pr===or){pc='tie';oc='tie'}else if(pr<or){pc='win';oc='loss'}else{pc='loss';oc='win'}}return `<div class="pss-riv-history-row"><div class="pss-riv-history-score ${pc}">${pr==null?'—':pr+'.'}</div><div class="pss-riv-history-main">${escapeHtml(h.date||'—')} · ${escapeHtml(RIV_levelLabel(h.level))} · ${escapeHtml(h.course||h.competition||'Konkurs')}</div><div class="pss-riv-history-score ${oc}">${or==null?'—':or+'.'}</div></div>`}).join('');
     const message=finalMode?(r.invalidated?'<div class="pss-riv-final-msg invalid">RYWALIZACJA UNIEWAŻNIONA — brak bonusu i kary OVR.</div>':r.pointsPlayer===r.pointsOpponent?'<div class="pss-riv-final-msg tie">NIC SIĘ NIE STAŁO: OVR bez zmian</div>':r.pointsPlayer>r.pointsOpponent?`<div class="pss-riv-final-msg win">GRATULACJE UŻYTKOWNIKU: ${diff.winDelta===0?'OVR bez zmian':`+${diff.winDelta} OVR`}</div>`:`<div class="pss-riv-final-msg loss">PORAŻKA TO TWÓJ WIERNY PRZYJACIEL: ${diff.lossDelta} OVR</div>`):'';
     inner.innerHTML=`<div class="pss-riv-head"><h2>RYWALIZACJA${finalMode?' — PODSUMOWANIE':''}</h2><p>${escapeHtml(diff?.name||'—')} · ${escapeHtml(RIV_levelLabel(r.startLevel))}</p></div>${status}<div class="pss-riv-profile-grid">${RIV_profileCard('GRACZ',p,true)}${RIV_profileCard('RYWAL',opponent,false)}</div><div class="pss-riv-scoreline"><span>Punkty</span><strong>${result.pointsPlayer}</strong><span>—</span><strong>${result.pointsOpponent}</strong></div><div class="pss-riv-category-wrap">${rows}</div>${r.contestHistory.length?`<div class="pss-riv-history"><h3>BEZPOŚREDNIE PORÓWNANIA KONKURSOWE</h3><div class="pss-riv-history-list">${history}</div></div>`:''}${finalMode?`<div class="pss-riv-final"><h3>KOŃCOWY REZULTAT</h3><div class="pss-riv-final-score">${result.pointsPlayer} — ${result.pointsOpponent}</div>${message}</div>`:''}<div class="pss-riv-actions">${finalMode?'<button type="button" class="pss-riv-btn primary" id="pssRivFinalContinue">KONTYNUUJ</button>':'<button type="button" class="pss-riv-btn secondary" id="pssRivClose">ZAMKNIJ</button>'}</div>`;
     if(finalMode)document.getElementById('pssRivFinalContinue')?.addEventListener('click',()=>RIV_resolveFinal(p));
@@ -16472,6 +16547,25 @@ try{
         }
       }catch(e){}
       return out;
+    };
+  }
+
+  /* Rywal startuje w TCS i innych imprezach głównych zawsze wtedy, gdy startujemy my
+     (na tym samym poziomie), niezależnie od limitu zawodników z jednego kraju. */
+  if(typeof eligibleWorldEntrants==='function'){
+    const RIV_baseEntrants=eligibleWorldEntrants;
+    eligibleWorldEntrants=function(player){
+      const pool=RIV_baseEntrants.apply(this,arguments);
+      try{
+        const r=RIV_checkLevel(player);
+        if(r?.active&&!r.invalidated&&!r.resolved&&r.opponent&&Array.isArray(pool)){
+          const lvl=competitionLevel(player);
+          const e=pool.find(x=>String(x.id)===String(r.opponent.id)||(x.name===r.opponent.name&&!x.player));
+          if(e){e.level=lvl;}
+          else if(Number(r.opponent.age||0)<AGEING.retirementAge){pool.push({name:r.opponent.name,nation:r.opponent.nation,ovr:RIV_num(r.opponent.ovr,60),baseOvr:RIV_num(r.opponent.ovr,60),age:r.opponent.age||24,id:r.opponent.id,player:false,level:lvl,real:!!r.opponent.real});pool.sort((a,b)=>b.ovr-a.ovr);}
+        }
+      }catch(err){}
+      return pool;
     };
   }
 
